@@ -4,6 +4,8 @@ import sys
 import subprocess
 import math
 import json
+import readline
+import glob
 
 # ==========================================
 # [Configuration & State]
@@ -34,6 +36,41 @@ class WunderState:
         # 상단에는 배너만 깔끔하게
 
 state = WunderState()
+
+# ==========================================
+# [Global Helper: Autocomplete]
+# ==========================================
+class FileCompleter:
+    """파일 목록 자동완성 로직"""
+    def complete(self, text, state):
+        if state == 0:
+            # 입력된 텍스트가 없으면 전체 파일, 있으면 매칭되는 파일 검색
+            if not text:
+                self.matches = [f for f in os.listdir('.') if not f.startswith('.')]
+            else:
+                self.matches = glob.glob(text + '*')
+        try:
+            return self.matches[state]
+        except IndexError:
+            return None
+        
+def check_process_alive():
+    try:
+        return gdb.selected_inferior().pid > 0
+    except:
+        return False
+
+def setup_global_features():
+    """시스템 전체에 Readline(화살표 이동/탭 완성) 적용"""
+    try:
+        # 탭 키로 자동완성 연결
+        readline.set_completer(FileCompleter().complete)
+        readline.parse_and_bind('tab: complete')
+        # 화살표 키 및 Home/End 키 활성화 (Linux/Mac 표준)
+        readline.parse_and_bind('set editing-mode emacs')
+    except Exception:
+        # Windows 등 readline 지원이 없는 환경 예외 처리
+        pass
 
 # ==========================================
 # [Helper Functions]
@@ -296,7 +333,7 @@ End State: {end_state}
     input("[Press Enter to return]")
 
 # ==========================================
-# [Menu 3] Advanced Analyze (Reinforced)
+# [Menu 3] Advanced Analyze (The Tactician)
 # ==========================================
 def advanced_analyze():
     if not state.target:
@@ -309,7 +346,7 @@ def advanced_analyze():
         state.print_banner()
         print(f"\n\033[1;34m[ Advanced Strategy : {state.target} ]\033[0m")
         
-        # 설정 상태 표시
+        # [Config Menu]
         print(f" [1] Set Arguments    : \033[1;33m{state.config_args if state.config_args else '(None)'}\033[0m")
         print(f" [2] Set Input File   : \033[1;33m{state.config_input_file if state.config_input_file else '(Keyboard)'}\033[0m")
         
@@ -319,249 +356,221 @@ def advanced_analyze():
         patch_str = f"{len(state.config_patches)} patch(es)" if state.config_patches else "(None)"
         print(f" [4] Add Memory Patch : \033[1;31m{patch_str}\033[0m")
 
-        # [NEW] Hook 표시
-        if state.config_hooks:
-            hook_str = f"{len(state.config_hooks)} action(s)"
-            # 상세 내용 살짝 보여주기
-            for i, h in enumerate(state.config_hooks):
-                hook_str += f"\n      └─ On '{h['point']}': {h['cmds'][:30]}..."
+        hook_cnt = len(state.config_hooks)
+        if hook_cnt > 0:
+            hook_str = f"{hook_cnt} action(s)"
+            for h in state.config_hooks:
+                hook_str += f"\n      └─ On '{h['point']}': {h['cmds'].replace(chr(10), '; ')[:30]}..."
         else:
             hook_str = "(None)"
         print(f" [5] Add BP Action    : \033[1;35m{hook_str}\033[0m")
         
-        print("\n [6] \033[1;32m>>> RUN (Execute Strategy) <<<\033[0m")
-        print(" [7] \033[1;36mOpen GDB Shell (Inspect State)\033[0m")
+        print("\n [6] \033[1;32m>>> RUN (Execute & Enter Live Session) <<<\033[0m")
         print(" [9] Clear All Config")
         print(" [0] Back to Main Menu")
         
         choice = input("\n\033[4mWunder/Advanced\033[0m > ").strip()
         
+        # --- Config Handling ---
         if choice == '1':
             state.config_args = input("Enter Arguments: ")
         
         elif choice == '2':
-            # 파일 목록 보여주고 선택
             print("\n[ Available Files ]")
             files = [f for f in os.listdir('.') if os.path.isfile(f) and not f.startswith('.')]
-            files.sort()
             draw_file_grid(files)
             inp = input("Enter Input Filename (or Enter to reset): ").strip()
-            if inp and os.path.exists(inp):
-                state.config_input_file = inp
-            else:
-                state.config_input_file = None
+            if inp and os.path.exists(inp): state.config_input_file = inp
+            else: state.config_input_file = None
         
         elif choice == '3':
-            bp = input("Enter Address or Symbol (e.g., 0x8048000 or main): ").strip()
+            bp = input("Enter Address/Symbol (e.g. *0x8048000, main): ").strip()
             if bp:
-                # 16진수 주소(0x...)로 시작하는데 *가 없으면 자동으로 붙여줌
-                if bp.startswith("0x") and not bp.startswith("*"):
-                    bp = "*" + bp
+                if bp.startswith("0x") and not bp.startswith("*"): bp = "*" + bp
                 state.config_breakpoints.append(bp)
         
         elif choice == '4':
-            print("\n[!] Memory Patch (Applies after starti)")
             p_addr = input("Address (hex): ").strip()
-            p_val = input("Value (hex bytes, e.g., 9090): ").strip()
-            if p_addr and p_val:
-                state.config_patches.append({'addr': p_addr, 'val': p_val})
+            p_val = input("Value (hex bytes): ").strip()
+            if p_addr and p_val: state.config_patches.append({'addr': p_addr, 'val': p_val})
 
-        # [NEW] Hook 설정 메뉴
         elif choice == '5':
-            print("\n\033[1;35m[ Automate Actions on Breakpoint ]\033[0m")
-            print("Usage: When 'Target' is hit, execute 'Commands' automatically.")
-            print("Commands: Use ';' to separate multiple GDB commands.")
-            print("Example: finish; set $rax=0; continue")
-            
-            target = input("Target BP (e.g., time): ").strip()
-            cmds = input("Commands (e.g., finish; set $rax=0; c): ").strip()
-            
+            target = input("Target BP: ").strip()
+            cmds = input("Cmds (e.g. finish; set $rax=0; c): ").strip()
             if target and cmds:
-                # 세미콜론을 개행 문자로 변환 (GDB commands 문법 맞춤)
-                formatted_cmds = cmds.replace(";", "\n")
-                state.config_hooks.append({'point': target, 'cmds': formatted_cmds})
-
-        elif choice == '6':
-            # === [EXECUTION LOGIC] ===
-            print(f"\n\033[1;32m[*] Executing Reinforced Strategy...\033[0m")
-            
-            # 1. Args 설정
-            if state.config_args:
-                gdb.execute(f"set args {state.config_args}")
-            
-            # 2. Patch 적용 로직 (starti 필요)
-            need_starti = bool(state.config_patches)
-            
-            if need_starti:
-                print("[*] Starting process to apply patches...")
-                gdb.execute("starti")
-                for p in state.config_patches:
-                    try:
-                        addr_int = int(p['addr'], 16)
-                        byte_data = bytes.fromhex(p['val'])
-                        gdb.selected_inferior().write_memory(addr_int, byte_data)
-                        print(f"    -> Patched {p['addr']} with {p['val']}")
-                    except Exception as e:
-                        print(f"    [!] Patch Failed: {e}")
-            else:
-                # Patch 없으면 그냥 Breakpoint 걸고 Run할 준비
-                pass
-
-            # 3. Breakpoint & Hook 설정
-            print("[*] Setting Breakpoints & Actions...")
-            gdb.execute("delete breakpoints") # 기존 BP 초기화
-            
-            # 3-1. 일반 Breakpoint
-            for bp in state.config_breakpoints:
-                gdb.execute(f"break {bp}")
-            
-            # 3-2. Hook (Action) Breakpoint
-            # GDB의 commands 기능을 파이썬으로 주입
-            for hook in state.config_hooks:
-                # 1) 브레이크포인트 생성
-                b = gdb.Breakpoint(hook['point'])
-                # 2) 해당 브레이크포인트 번호에 명령어(commands) 주입
-                # 주의: commands {num} \n cmd1 \n cmd2 \n end 구조여야 함
-                cmd_block = f"commands {b.number}\n{hook['cmds']}\nend"
-                gdb.execute(cmd_block)
-                print(f"    -> Hook set on '{hook['point']}' (BP #{b.number})")
-
-            # 4. 실행 (Run or Continue)
-            if need_starti:
-                print("[*] Continuing...")
-                gdb.execute("continue")
-            else:
-                run_cmd = "run"
-                if state.config_input_file:
-                    run_cmd += f" < {state.config_input_file}"
-                print(f"[*] Running: {run_cmd}")
-                try:
-                    gdb.execute(run_cmd)
-                except Exception as e:
-                    print(f"[!] Execution finished: {e}")
-
-            input("\n[Execution Paused. Press Enter to return]")
-
-        elif choice == '7':
-            print("\n\033[1;36m[ Entering GDB Shell ]\033[0m")
-            print("Type GDB commands directly. Type 'back' or 'exit' to return to menu.")
-            
-            while True:
-                try:
-                    gdb_cmd = input("\033[1;36m(gdb-shell)\033[0m > ").strip()
-                    if gdb_cmd.lower() in ['back', 'exit', 'quit']:
-                        break
-                    if not gdb_cmd: continue
-                    
-                    # GDB 명령어 실행 및 결과 출력
-                    gdb.execute(gdb_cmd)
-                    
-                except gdb.error as e:
-                    print(f"Error: {e}")
-                except KeyboardInterrupt:
-                    print("\n[!] Use 'back' to return.")
+                state.config_hooks.append({'point': target, 'cmds': cmds.replace(";", "\n")})
 
         elif choice == '9':
-            state.config_args = ""
-            state.config_input_file = None
-            state.config_breakpoints = []
-            state.config_patches = []
-            state.config_hooks = [] # Hook 초기화
-            print("[*] Config Cleared.")
-            input()
+            state.config_args = ""; state.config_input_file = None
+            state.config_breakpoints = []; state.config_patches = []; state.config_hooks = []
+            print("[*] Config Cleared."); input()
 
         elif choice == '0':
             break
 
+        # --- Execution Logic ---
+        elif choice == '6':
+            print(f"\n\033[1;32m[*] Executing Reinforced Strategy...\033[0m")
+            
+            # 1. Apply Args
+            if state.config_args: gdb.execute(f"set args {state.config_args}")
+            
+            # 2. Apply Patches (requires starti)
+            need_starti = bool(state.config_patches)
+            if need_starti:
+                print("[*] Applying Patches (starti)...")
+                gdb.execute("starti")
+                for p in state.config_patches:
+                    try:
+                        gdb.selected_inferior().write_memory(int(p['addr'], 16), bytes.fromhex(p['val']))
+                        print(f"    -> Patched {p['addr']}")
+                    except Exception as e: print(f"    [!] Patch Fail: {e}")
+            
+            # 3. Setup Breakpoints & Hooks
+            gdb.execute("delete breakpoints")
+            for bp in state.config_breakpoints: gdb.execute(f"break {bp}")
+            for h in state.config_hooks:
+                gdb.execute(f"break {h['point']}")
+                gdb.execute(f"commands\n{h['cmds']}\nend")
+                print(f"    -> Hook set on '{h['point']}'")
+
+            # 4. Run Execution
+            try:
+                if need_starti:
+                    print("[*] Continuing...")
+                    gdb.execute("continue")
+                else:
+                    run_cmd = f"run < {state.config_input_file}" if state.config_input_file else "run"
+                    print(f"[*] Running: {run_cmd}")
+                    gdb.execute(run_cmd)
+            except Exception as e:
+                print(f"[!] Execution State: {e}")
+
+            # ==========================================
+            # [Live Session Loop]
+            # ==========================================
+            while True:
+                # Check process state
+                try:
+                    if not gdb.selected_inferior().pid:
+                        print("\n\033[1;31m[!] Process is dead. Returning to Config.\033[0m")
+                        input(); break
+                except: break
+
+                print(f"\n\033[1;44m[ Live Session: {state.target} ]\033[0m")
+                print(" [1] GDB Shell (Inspect State)")
+                print(" [2] Track Register (JSONL)")
+                print(" [3] Track Memory (JSONL)")
+                print(" [4] Continue Execution")
+                print(" [0] Stop & Return to Config")
+                
+                live_cmd = input("\n\033[1;33m(Live) > \033[0m").strip()
+                
+                if live_cmd == '1': # GDB Shell
+                    print("\n\033[1;36m[ Entering GDB Shell. Type 'back' to return. ]\033[0m")
+                    while True:
+                        try:
+                            c = input("\033[1;36m(gdb-shell)\033[0m > ").strip()
+                            if c.lower() in ['back', 'exit', 'quit']: break
+                            if not c: continue
+                            gdb.execute(c)
+                        except Exception as e: print(f"Error: {e}")
+
+                elif live_cmd == '2': # Track Reg
+                    # [FIX] 입력 보정: 사용자가 $를 넣든 말든 그대로 넘김 (run_tracer가 처리)
+                    reg = input("Register (e.g. rax or $eip): ").strip()
+                    steps = input("Max Steps (1000): ").strip()
+                    if reg: 
+                        run_tracer('reg', reg, int(steps) if steps.isdigit() else 1000)
+
+                elif live_cmd == '3': # Track Mem
+                    # [FIX] 입력 보정: 사용자가 주소만 넣어도 됨
+                    addr = input("Address (e.g. 0x4000 or *0x4000): ").strip()
+                    steps = input("Max Steps (1000): ").strip()
+                    if addr:
+                        run_tracer('mem', addr, int(steps) if steps.isdigit() else 1000)
+
+                elif live_cmd == '4': # Continue
+                    print("[*] Continuing..."); 
+                    try: gdb.execute("continue")
+                    except Exception as e: print(f"[!] Stopped: {e}")
+
+                elif live_cmd == '0': # Stop
+                    print("[*] Returning to Config.")
+                    break
+
 # ==========================================
-# [Helper: Tracer Logic]
+# [Tracer Logic]
 # ==========================================
 def run_tracer(target_type, target_val, max_steps=1000):
-    """
-    target_type: 'reg' or 'mem'
-    target_val: 'rax' or '0x401000' (string)
-    """
-    # 1. 프로세스 실행 여부 확인
-    try:
-        gdb.selected_inferior()
-    except:
-        print("\n\033[1;31m[!] Error: Process is not running. Start it with option [2] or [3] first.\033[0m")
-        input()
+    if not check_process_alive():
+        print("\n\033[1;31m[!] Process is not running.\033[0m")
         return
 
-    # 출력 파일 설정
-    clean_name = target_val.replace('*', '').replace('$', '')
-    out_path = os.path.join(state.output_dir, f"trace_{clean_name}.jsonl")
+    # [FIX] 입력값 보정 로직 (User Input Sanitization)
+    # 1. 파일명 생성을 위한 clean_name (기호 제거)
+    clean_name = target_val.replace('*', '').replace('$', '').strip()
     
-    print(f"\n\033[1;36m[*] Start Tracing '{target_val}' for {max_steps} steps...\033[0m")
-    print(f"    Output -> {out_path}")
+    # 2. GDB 전달을 위한 expr 생성 (기호 자동 부착)
+    if target_type == 'reg':
+        # $가 있으면 그대로, 없으면 붙임
+        expr = target_val if target_val.startswith('$') else f"${target_val}"
+    else: # mem
+        # *가 있거나 0x로 시작하면 그대로, 아니면(변수명 등) 주소값 참조를 위해 * 붙임?
+        # 상황: 사용자가 '0x8048000' 입력 -> '*0x8048000' (값 참조)
+        # 상황: 사용자가 'flag' 입력 -> 'flag' (주소 혹은 값?) -> 보통 값 참조를 원함
+        # 상황: 사용자가 '*0x8048000' 입력 -> 그대로
+        expr = target_val if target_val.startswith('*') else f"*{target_val}"
+
+    out_path = os.path.join(state.output_dir, f"trace_{clean_name}.jsonl")
+    print(f"\n\033[1;36m[*] Tracing '{expr}' ({max_steps} steps) -> {out_path}\033[0m")
     
     logged_count = 0
-    
     with open(out_path, "w", encoding="utf-8") as f:
-        # 초기 값 로드
-        prev_val = None
         try:
-            if target_type == 'reg':
-                prev_val = gdb.parse_and_eval(f"${target_val}")
-            else: # mem
-                # 포인터면 *addr, 아니면 그냥 addr
-                expr = target_val if target_val.startswith('*') else f"*{target_val}"
-                prev_val = gdb.parse_and_eval(expr)
-            prev_val = int(prev_val) # 정수형 변환
+            # 초기값 파싱
+            val_obj = gdb.parse_and_eval(expr)
+            prev_val = int(val_obj) # 여기서 에러나면 잘못된 타겟
         except Exception as e:
-            print(f"\033[1;31m[!] Invalid Target: {e}\033[0m")
-            input()
+            print(f"\033[1;31m[!] Invalid Target '{expr}': {e}\033[0m")
             return
 
-        # [Tracing Loop]
         for i in range(max_steps):
             try:
-                # 1. 현재 PC와 명령어 가져오기
                 frame = gdb.newest_frame()
                 pc = frame.pc()
-                # 현재 어셈블리 가져오기 (x/i $pc)
-                asm = gdb.execute("x/i $pc", to_string=True).strip().split(':\t')[-1].strip()
+                try: asm = gdb.execute("x/i $pc", to_string=True).strip().split(':\t')[-1].strip()
+                except: asm = "???"
                 
-                # 2. 한 스텝 진행 (stepi)
                 gdb.execute("stepi", to_string=True)
                 
-                # 3. 값 변화 체크
-                curr_val = 0
-                if target_type == 'reg':
-                    curr_val = int(gdb.parse_and_eval(f"${target_val}"))
-                else:
-                    expr = target_val if target_val.startswith('*') else f"*{target_val}"
-                    curr_val = int(gdb.parse_and_eval(expr))
+                # 현재값 파싱
+                curr_val = int(gdb.parse_and_eval(expr))
                 
-                # 값이 변했거나, 루프의 첫 시작(Context)이면 기록? -> 변했을 때만 기록하자 (토큰 절약)
                 if curr_val != prev_val:
                     log_entry = {
-                        "step": i,
-                        "pc": hex(pc),
-                        "asm": asm,
-                        "target": target_val,
-                        "old": hex(prev_val),
-                        "new": hex(curr_val),
-                        "diff": hex(curr_val - prev_val) # 변화량 (암호화 분석에 꿀)
+                        "step": i, 
+                        "pc": hex(pc), 
+                        "asm": asm, 
+                        "target": clean_name, 
+                        "old": hex(prev_val), 
+                        "new": hex(curr_val), 
+                        "diff": hex(curr_val - prev_val)
                     }
                     f.write(json.dumps(log_entry) + "\n")
+                    
+                    # 변화 감지 시 화면 출력 (너무 빠르면 스킵 가능하나, 시각적 피드백 위해 유지)
+                    print(f"\033[1;33m[Trace] {asm} | {log_entry['old']} -> {log_entry['new']}\033[0m")
+                    
                     prev_val = curr_val
                     logged_count += 1
-                    
-                    # 화면엔 간략히 표시
-                    print(f"\033[1;33m[Trace] {asm} | {log_entry['old']} -> {log_entry['new']}\033[0m")
-
             except gdb.error:
-                print("\n[!] Process stopped/finished.")
                 break
             except Exception as e:
-                print(f"\n[!] Error during trace: {e}")
+                print(f"[!] Error: {e}")
                 break
 
-    print(f"\n\033[1;32m[+] Tracing Done. {logged_count} changes logged.\033[0m")
-    input("[Press Enter to return]")
-
+    print(f"\n[+] Tracing Done. {logged_count} changes logged.")
 
 # ==========================================
 # [Menu 4 & 5] Tracking Implementation
@@ -605,6 +614,7 @@ def tracking_register():
 def main_menu():
     gdb.execute("set pagination off")
     gdb.execute("set confirm off")
+    setup_global_features() # [NEW] 전역 기능 활성화
     while True:
         wunder_cls()
         state.print_banner()
